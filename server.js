@@ -78,7 +78,7 @@ app.get('/api/parking', async (req, res) => {
     });
 });
 
-// POST: สำหรับฟอร์มหน้าทดสอบ API จองที่จอดรถ
+// POST: สำหรับฟอร์มหน้าทดสอบ API จองที่จอดรถ (ของเก่า)
 app.post('/api/parking/book', async (req, res) => {
     const { nickname, floor, spot_number } = req.body;
 
@@ -86,7 +86,6 @@ app.post('/api/parking/book', async (req, res) => {
         return res.status(400).json({ success: false, error: 'ข้อมูลไม่ครบถ้วน' });
     }
 
-    // ค้นหาตำแหน่งช่องจอด
     const { data: spot, error } = await supabase
         .from('parking_spots')
         .select('*')
@@ -102,7 +101,6 @@ app.post('/api/parking/book', async (req, res) => {
         return res.status(400).json({ success: false, error: 'ช่องไม่ว่าง' });
     }
 
-    // อัปเดตข้อมูลลง Supabase
     const { error: updateError } = await supabase
         .from('parking_spots')
         .update({ status: 'occupied', booked_by: nickname, session_id: 'api-test-session' })
@@ -112,13 +110,96 @@ app.post('/api/parking/book', async (req, res) => {
         return res.status(500).json({ success: false, error: 'ไม่สามารถบันทึกข้อมูลได้' });
     }
 
-    // ส่งสัญญาณ Real-time บอกทุกคนที่เปิดหน้าเว็บหลักอยู่
     const updatedSpots = await getParkingSpots();
     io.emit('updateSpots', updatedSpots);
 
     res.json({
         success: true,
         message: 'จองสำเร็จ',
+        spot: updatedSpots.find(s => s.id === spot.id)
+    });
+});
+
+// 🚀 [เพิ่มใหม่] API สำหรับจองช่องจอด (Reserve) แบบให้ Botnoi ยิงเข้ามา
+app.post('/api/parking/reserve', async (req, res) => {
+    const { nickname, floor, spot_number } = req.body;
+
+    if (!nickname || !floor || !spot_number) {
+        return res.status(400).json({ success: false, error: 'ข้อมูลไม่ครบถ้วน (ต้องการ nickname, floor, spot_number)' });
+    }
+
+    const { data: spot, error } = await supabase
+        .from('parking_spots')
+        .select('*')
+        .eq('floor', floor)
+        .eq('spot_number', spot_number)
+        .single();
+
+    if (error || !spot) {
+        return res.status(404).json({ success: false, error: 'ไม่พบช่องจอดนี้ในระบบ' });
+    }
+
+    if (spot.status !== 'empty') {
+        return res.status(400).json({ success: false, error: 'ช่องนี้มีผู้จองไปแล้ว' });
+    }
+
+    const { error: updateError } = await supabase
+        .from('parking_spots')
+        .update({ status: 'occupied', booked_by: nickname, session_id: 'botnoi-user' })
+        .eq('id', spot.id);
+
+    if (updateError) {
+        return res.status(500).json({ success: false, error: 'ไม่สามารถบันทึกข้อมูลได้' });
+    }
+
+    const updatedSpots = await getParkingSpots();
+    io.emit('updateSpots', updatedSpots);
+
+    res.json({
+        success: true,
+        message: `จองช่อง P-${spot_number} ชั้น ${floor} สำเร็จ!`,
+        spot: updatedSpots.find(s => s.id === spot.id)
+    });
+});
+
+// 🚀 [เพิ่มใหม่] API สำหรับยกเลิก/เอารถออก (Release) แบบให้ Botnoi ยิงเข้ามา
+app.post('/api/parking/release', async (req, res) => {
+    const { floor, spot_number } = req.body;
+
+    if (!floor || !spot_number) {
+        return res.status(400).json({ success: false, error: 'ข้อมูลไม่ครบถ้วน (ต้องการ floor, spot_number)' });
+    }
+
+    const { data: spot, error } = await supabase
+        .from('parking_spots')
+        .select('*')
+        .eq('floor', floor)
+        .eq('spot_number', spot_number)
+        .single();
+
+    if (error || !spot) {
+        return res.status(404).json({ success: false, error: 'ไม่พบช่องจอดนี้ในระบบ' });
+    }
+
+    if (spot.status === 'empty') {
+        return res.status(400).json({ success: false, error: 'ช่องนี้ว่างอยู่แล้ว' });
+    }
+
+    const { error: updateError } = await supabase
+        .from('parking_spots')
+        .update({ status: 'empty', booked_by: null, session_id: null })
+        .eq('id', spot.id);
+
+    if (updateError) {
+        return res.status(500).json({ success: false, error: 'ไม่สามารถบันทึกข้อมูลได้' });
+    }
+
+    const updatedSpots = await getParkingSpots();
+    io.emit('updateSpots', updatedSpots);
+
+    res.json({
+        success: true,
+        message: `คืนช่อง P-${spot_number} ชั้น ${floor} เรียบร้อยแล้ว`,
         spot: updatedSpots.find(s => s.id === spot.id)
     });
 });
